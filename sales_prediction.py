@@ -1,186 +1,226 @@
 import streamlit as st
 import pandas as pd
-import matplotlib.pyplot as plt
 import numpy as np
-from sklearn.linear_model import LinearRegression
+import matplotlib.pyplot as plt
+import plotly.express as px
+import plotly.graph_objects as go
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.linear_model import LinearRegression, Ridge
+from sklearn.svm import SVR
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import r2_score
-import io
+from sklearn.metrics import r2_score, mean_squared_error
+from sklearn.preprocessing import StandardScaler
+import warnings
+warnings.filterwarnings('ignore')
 
-# Set page config
-st.set_page_config(page_title="Sales Prediction Model", page_icon="📈", layout="wide")
-
-# Title and description
-st.title("📈 Sales Prediction Model")
-st.markdown("This app uses linear regression to predict sales based on monthly data.")
-
-# Sidebar for user inputs
-st.sidebar.header("Configuration")
-
-# Option to upload CSV or use sample data
-data_option = st.sidebar.radio("Data Source:", ["Use Sample Data", "Upload CSV File"])
+st.set_page_config(page_title="Advanced Sales Predictor", page_icon="📊", layout="wide")
+st.title("🚀 Advanced Sales Prediction Platform")
 
 @st.cache_data
-def create_sample_data():
-    """Create sample sales data for demonstration"""
+def generate_sample_data(months=36):
     np.random.seed(42)
-    months = np.arange(1, 25)  # 24 months
-    # Create a trend with some noise
-    sales = 1000 + months * 50 + np.random.normal(0, 100, len(months))
-    df = pd.DataFrame({
-        'Month': months,
-        'Sales': sales
+    dates = pd.date_range('2021-01-01', periods=months, freq='M')
+    base_sales = 10000 + np.arange(months) * 200
+    seasonal = 2000 * np.sin(2 * np.pi * np.arange(months) / 12)
+    marketing = np.random.uniform(1000, 5000, months)
+    price = np.random.uniform(45, 55, months)
+    competitor = np.random.randint(3, 8, months)
+    
+    sales = base_sales + seasonal + marketing * 0.5 - (price - 50) * 200 - competitor * 150
+    sales += np.random.normal(0, 500, months)
+    
+    return pd.DataFrame({
+        'Date': dates, 'Month': np.arange(1, months+1), 'Sales': sales,
+        'Marketing_Spend': marketing, 'Price': price, 'Competitors': competitor
     })
-    return df
 
-@st.cache_data
-def load_data(uploaded_file):
-    """Load data from uploaded file"""
-    try:
-        df = pd.read_csv(uploaded_file)
-        return df
-    except Exception as e:
-        st.error(f"Error loading file: {str(e)}")
-        return None
+# Sidebar
+st.sidebar.header("⚙️ Configuration")
+data_source = st.sidebar.radio("Data Source", ["Sample Data", "Upload CSV"])
 
-# Load data based on user choice
-if data_option == "Use Sample Data":
-    df = create_sample_data()
-    st.success("Sample data loaded successfully!")
+if data_source == "Sample Data":
+    months = st.sidebar.slider("Months", 12, 60, 36)
+    df = generate_sample_data(months)
 else:
-    uploaded_file = st.sidebar.file_uploader("Choose a CSV file", type="csv")
-    if uploaded_file is not None:
-        df = load_data(uploaded_file)
-        if df is not None:
-            st.success("File uploaded successfully!")
+    file = st.sidebar.file_uploader("Upload CSV", type="csv")
+    if file:
+        df = pd.read_csv(file)
     else:
-        st.info("Please upload a CSV file to continue.")
+        st.info("Please upload a CSV file")
         st.stop()
 
-# Display data info
-if df is not None:
+# Feature engineering
+df['Sales_MA3'] = df['Sales'].rolling(3).mean()
+df['Sales_Growth'] = df['Sales'].pct_change()
+df['Quarter'] = ((df['Month'] - 1) // 3) + 1
+
+# Main interface
+tab1, tab2, tab3, tab4 = st.tabs(["📊 Overview", "🔍 Analysis", "🤖 Models", "🔮 Forecast"])
+
+with tab1:
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Records", len(df))
+    col2.metric("Avg Sales", f"${df['Sales'].mean():,.0f}")
+    col3.metric("Max Sales", f"${df['Sales'].max():,.0f}")
+    col4.metric("Growth Rate", f"{df['Sales_Growth'].mean()*100:.1f}%")
+    
+    st.subheader("Sales Trend")
+    fig = px.line(df, x='Date' if 'Date' in df.columns else 'Month', y='Sales')
+    st.plotly_chart(fig, use_container_width=True)
+    
+    st.dataframe(df.head())
+
+with tab2:
+    st.subheader("Correlation Analysis")
+    numeric_cols = df.select_dtypes(include=[np.number]).columns
+    corr = df[numeric_cols].corr()
+    fig = px.imshow(corr, color_continuous_scale='RdBu', aspect='auto')
+    st.plotly_chart(fig, use_container_width=True)
+    
     col1, col2 = st.columns(2)
-    
     with col1:
-        st.subheader("📊 Data Overview")
-        st.write(f"Dataset shape: {df.shape}")
-        st.write("First few rows:")
-        st.dataframe(df.head())
-    
+        fig = px.scatter(df, x='Marketing_Spend', y='Sales', trendline='ols')
+        st.plotly_chart(fig, use_container_width=True)
     with col2:
-        st.subheader("📈 Data Statistics")
-        st.write(df.describe())
+        fig = px.box(df, x='Quarter', y='Sales')
+        st.plotly_chart(fig, use_container_width=True)
 
-    # Check if required columns exist
-    required_columns = ['Month', 'Sales']
-    missing_columns = [col for col in required_columns if col not in df.columns]
+with tab3:
+    st.subheader("Model Training & Comparison")
     
-    if missing_columns:
-        st.error(f"Missing required columns: {missing_columns}")
-        st.info("Your CSV file should have 'Month' and 'Sales' columns.")
-        st.stop()
+    features = st.multiselect("Select Features", 
+                             ['Month', 'Marketing_Spend', 'Price', 'Competitors'],
+                             default=['Month', 'Marketing_Spend', 'Price'])
+    
+    if features:
+        X = df[features].fillna(df[features].mean())
+        y = df['Sales']
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+        
+        models = {
+            'Linear Regression': LinearRegression(),
+            'Ridge Regression': Ridge(),
+            'Random Forest': RandomForestRegressor(n_estimators=50, random_state=42),
+            'Gradient Boosting': GradientBoostingRegressor(n_estimators=50, random_state=42),
+            'SVR': SVR(kernel='rbf')
+        }
+        
+        if st.button("🚀 Train Models"):
+            results = {}
+            progress = st.progress(0)
+            
+            for i, (name, model) in enumerate(models.items()):
+                try:
+                    if name == 'SVR':
+                        scaler = StandardScaler()
+                        X_train_scaled = scaler.fit_transform(X_train)
+                        X_test_scaled = scaler.transform(X_test)
+                        model.fit(X_train_scaled, y_train)
+                        y_pred = model.predict(X_test_scaled)
+                    else:
+                        model.fit(X_train, y_train)
+                        y_pred = model.predict(X_test)
+                    
+                    r2 = r2_score(y_test, y_pred)
+                    rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+                    results[name] = {'R²': r2, 'RMSE': rmse, 'model': model}
+                except:
+                    results[name] = {'R²': 0, 'RMSE': float('inf'), 'model': None}
+                
+                progress.progress((i + 1) / len(models))
+            
+            # Results table
+            results_df = pd.DataFrame({k: {'R²': v['R²'], 'RMSE': v['RMSE']} 
+                                     for k, v in results.items()}).T
+            st.dataframe(results_df.sort_values('R²', ascending=False))
+            
+            # Best model visualization
+            best_model = max(results.keys(), key=lambda x: results[x]['R²'])
+            st.success(f"🏆 Best Model: {best_model} (R² = {results[best_model]['R²']:.4f})")
+            
+            # Performance chart
+            fig = px.bar(x=list(results.keys()), y=[v['R²'] for v in results.values()],
+                        title="Model Performance (R² Score)")
+            st.plotly_chart(fig, use_container_width=True)
+            
+            st.session_state['results'] = results
+            st.session_state['features'] = features
 
-    # Model parameters
-    st.sidebar.subheader("Model Parameters")
-    test_size = st.sidebar.slider("Test Size (fraction)", 0.1, 0.5, 0.2, 0.05)
-    random_state = st.sidebar.number_input("Random State", 0, 100, 42)
+with tab4:
+    st.subheader("Sales Forecasting")
+    
+    if 'results' in st.session_state:
+        results = st.session_state['results']
+        features = st.session_state['features']
+        
+        model_choice = st.selectbox("Select Model", list(results.keys()))
+        forecast_months = st.slider("Forecast Periods", 1, 12, 6)
+        
+        # Scenario inputs
+        st.write("**Scenario Planning:**")
+        col1, col2 = st.columns(2)
+        scenario = {}
+        for i, feature in enumerate(features):
+            col = col1 if i % 2 == 0 else col2
+            current_val = df[feature].iloc[-1] if feature != 'Month' else df['Month'].max()
+            scenario[feature] = col.number_input(f"Future {feature}", value=float(current_val))
+        
+        if st.button("📈 Generate Forecast"):
+            model = results[model_choice]['model']
+            if model:
+                # Create future data
+                future_data = []
+                for i in range(forecast_months):
+                    future_point = scenario.copy()
+                    if 'Month' in future_point:
+                        future_point['Month'] = df['Month'].max() + i + 1
+                    future_data.append(future_point)
+                
+                future_df = pd.DataFrame(future_data)
+                
+                # Handle SVR scaling
+                if model_choice == 'SVR':
+                    X_current = df[features].fillna(df[features].mean())
+                    scaler = StandardScaler()
+                    scaler.fit(X_current)
+                    future_scaled = scaler.transform(future_df)
+                    predictions = model.predict(future_scaled)
+                else:
+                    predictions = model.predict(future_df)
+                
+                # Visualization
+                fig = go.Figure()
+                
+                # Historical data
+                x_axis = df['Date'] if 'Date' in df.columns else df['Month']
+                fig.add_trace(go.Scatter(x=x_axis, y=df['Sales'], name='Historical', line=dict(color='blue')))
+                
+                # Forecast
+                if 'Date' in df.columns:
+                    future_dates = pd.date_range(df['Date'].max(), periods=forecast_months+1, freq='M')[1:]
+                    fig.add_trace(go.Scatter(x=future_dates, y=predictions, name='Forecast', 
+                                           line=dict(color='red', dash='dash')))
+                else:
+                    future_months_x = range(df['Month'].max()+1, df['Month'].max()+forecast_months+1)
+                    fig.add_trace(go.Scatter(x=future_months_x, y=predictions, name='Forecast', 
+                                           line=dict(color='red', dash='dash')))
+                
+                fig.update_layout(title=f"Sales Forecast - {model_choice}", xaxis_title="Period", yaxis_title="Sales")
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Forecast table
+                forecast_df = pd.DataFrame({
+                    'Period': range(1, forecast_months+1),
+                    'Predicted_Sales': predictions
+                })
+                st.dataframe(forecast_df)
+                
+                # Download
+                csv = forecast_df.to_csv(index=False)
+                st.download_button("📥 Download Forecast", csv, "forecast.csv", "text/csv")
+    else:
+        st.info("Please train models first in the Models tab.")
 
-    # Prepare data
-    X = df[['Month']]
-    y = df['Sales']
-
-    # Train-test split
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, random_state=random_state
-    )
-
-    # Model training
-    model = LinearRegression()
-    model.fit(X_train, y_train)
-
-    # Predictions
-    y_pred = model.predict(X_test)
-    y_pred_all = model.predict(X)
-
-    # Model evaluation
-    r2 = r2_score(y_test, y_pred)
-
-    # Display results
-    st.subheader("🎯 Model Performance")
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.metric("R² Score", f"{r2:.4f}")
-    
-    with col2:
-        st.metric("Training Samples", len(X_train))
-    
-    with col3:
-        st.metric("Test Samples", len(X_test))
-
-    # Visualization
-    st.subheader("📊 Sales Prediction Visualization")
-    
-    fig, ax = plt.subplots(figsize=(10, 6))
-    
-    # Plot actual data points
-    ax.scatter(X, y, color='blue', alpha=0.6, label='Actual Sales')
-    
-    # Plot regression line
-    ax.plot(X, y_pred_all, color='red', linewidth=2, label='Prediction Line')
-    
-    # Plot test predictions
-    ax.scatter(X_test, y_pred, color='orange', alpha=0.8, s=60, 
-               label='Test Predictions', marker='x')
-    
-    ax.set_title('Sales Prediction Model', fontsize=16, fontweight='bold')
-    ax.set_xlabel('Month', fontsize=12)
-    ax.set_ylabel('Sales', fontsize=12)
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    
-    st.pyplot(fig)
-
-    # Model coefficients
-    st.subheader("🔍 Model Details")
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.write("**Model Coefficients:**")
-        st.write(f"Slope: {model.coef_[0]:.2f}")
-        st.write(f"Intercept: {model.intercept_:.2f}")
-    
-    with col2:
-        st.write("**Model Equation:**")
-        st.write(f"Sales = {model.intercept_:.2f} + {model.coef_[0]:.2f} × Month")
-
-    # Prediction for new values
-    st.subheader("🔮 Make Predictions")
-    new_month = st.number_input("Enter month for prediction:", 
-                               min_value=1, max_value=100, value=25)
-    
-    if st.button("Predict Sales"):
-        prediction = model.predict([[new_month]])[0]
-        st.success(f"Predicted sales for month {new_month}: ${prediction:,.2f}")
-
-    # Download results
-    st.subheader("💾 Download Results")
-    
-    # Create results dataframe
-    results_df = df.copy()
-    results_df['Predicted_Sales'] = y_pred_all
-    results_df['Residuals'] = y - y_pred_all
-    
-    csv_buffer = io.StringIO()
-    results_df.to_csv(csv_buffer, index=False)
-    
-    st.download_button(
-        label="Download Predictions as CSV",
-        data=csv_buffer.getvalue(),
-        file_name="sales_predictions.csv",
-        mime="text/csv"
-    )
-
-# Footer
 st.markdown("---")
-st.markdown("Built with Streamlit 🎈 | Sales Prediction Model")
+st.markdown("🚀 **Advanced Sales Prediction Platform** | Built with Streamlit & Machine Learning")
+
