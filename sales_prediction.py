@@ -200,6 +200,10 @@ with tab2:
             st.pyplot(fig)
     
     with col2:
+        # Create Quarter from Month if not available from Date
+        if 'Quarter' not in df.columns and 'Month' in df.columns:
+            df['Quarter'] = ((df['Month'] - 1) // 3) + 1
+        
         if 'Quarter' in df.columns:
             st.subheader("📈 Sales Distribution by Quarter")
             fig, ax = plt.subplots(figsize=(8, 6))
@@ -208,6 +212,17 @@ with tab2:
             ax.set_xlabel('Quarter')
             ax.set_ylabel('Sales ($)')
             plt.suptitle('')  # Remove default title
+            plt.tight_layout()
+            st.pyplot(fig)
+        else:
+            # Alternative chart if no Quarter data
+            st.subheader("📊 Sales Distribution")
+            fig, ax = plt.subplots(figsize=(8, 6))
+            ax.hist(df['Sales'], bins=20, alpha=0.7, color='skyblue', edgecolor='black')
+            ax.set_xlabel('Sales ($)')
+            ax.set_ylabel('Frequency')
+            ax.set_title('Sales Distribution Histogram')
+            ax.grid(True, alpha=0.3)
             plt.tight_layout()
             st.pyplot(fig)
 
@@ -547,5 +562,3 @@ st.markdown("""
     <p>Built with Streamlit | Powered by Machine Learning & Advanced Analytics</p>
 </div>
 """, unsafe_allow_html=True)
-
-
